@@ -427,11 +427,13 @@
   });
 
   function onTimezoneChanged() {
-    const iata = ($('iataInput').value || '').trim().toUpperCase();
+    // wrapper used from several event handlers
     const tzManual = ($('tzInput').value || '').trim();
+    const iata = ($('iataInput').value || '').trim().toUpperCase();
     const builtin = IATA_TZ[iata];
     const tz = tzManual || builtin || '';
     if (!tz) {
+      // try resolving if we have a 3-letter IATA
       if (iata && iata.length === 3) {
         $('destNowDisplay').textContent = `Looking up timezone for ${iata}...`;
         resolveIataToTimezone(iata).then(foundTz => {
@@ -447,7 +449,7 @@
             currentDestNowMs = null; currentDestTz = null;
           }
         }).catch(() => {
-          $('destNowDisplay').textContent = `Unknown IATA code "${iata}" and lookup failed. Enter IANA tz or choose a sample.`;
+          $('destNowDisplay').textContent = `Lookup failed for IATA ${iata}. Enter IANA tz or choose a sample.`;
           currentDestNowMs = null; currentDestTz = null;
         });
       } else {
@@ -461,8 +463,7 @@
       .catch(() => {
         const nowUtc = new Date();
         const destParts = getLocalParts(tz, nowUtc);
-        const nowDestMs = localPartsToUtcMs(destParts);
-        setDestNowDisplayFromMs(tz, nowDestMs, 'Intl-fallback');
+        setDestNowDisplayFromMs(tz, localPartsToUtcMs(destParts), 'Intl-fallback');
       });
   }
 
