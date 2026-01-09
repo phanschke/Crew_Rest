@@ -22,11 +22,12 @@
     .ok { color: #166; font-weight:700; }
     .inline-note { font-weight:400; margin-left:8px; color:#333; }
     .readonly { background:#f5f5f5; border:1px solid #e2e2e2; padding:6px 8px; }
+    .hint { font-size:0.9rem; color:#666; margin-left:6px; }
   </style>
 </head>
 <body>
   <h1>Crew Rest Calculator — Demo (single file)</h1>
-  <p>Enter inputs, press "Compute schedule". All times displayed in destination local time (12-hour AM/PM). This demo uses a small IATA→IANA mapping; if the airport isn't listed you can enter the IANA timezone manually.</p>
+  <p>Enter inputs, press "Compute schedule". All times displayed in destination local time (12-hour AM/PM). This demo uses a built-in IATA→IANA mapping and will attempt an online lookup for unknown IATA codes. Destination time uses worldtimeapi.org when available.</p>
 
   <label>IATA code (or select) / Time zone &amp; destination local time
     <div class="row">
@@ -37,16 +38,18 @@
         <option value="LHR">LHR (London)</option>
         <option value="CDG">CDG (Paris)</option>
         <option value="FRA">FRA (Frankfurt)</option>
+        <option value="BER">BER (Berlin)</option>
         <option value="SFO">SFO (San Francisco)</option>
         <option value="NRT">NRT (Tokyo Narita)</option>
         <option value="SYD">SYD (Sydney)</option>
         <option value="SIN">SIN (Singapore)</option>
       </select>
 
-      <input id="iataInput" placeholder="IATA code (e.g. LAX) or leave blank" class="small" />
-      <input id="tzInput" placeholder="IANA time zone (optional e.g. America/Los_Angeles)" class="small" />
+      <input id="iataInput" placeholder="Enter 3‑letter IATA (e.g. LAX)" class="small" maxlength="3" />
+      <input id="tzInput" placeholder="Or enter IANA tz (e.g. America/Los_Angeles)" class="small" />
       <div id="destNowDisplay" class="inline-note">Destination local time: —</div>
     </div>
+    <div class="hint">Tip: type a 3-letter IATA code and it will auto-lookup the timezone (online lookup) if not in the built-in list.</div>
   </label>
 
   <label>Touchdown time (destination local)
@@ -59,9 +62,9 @@
     </div>
   </label>
 
-  <label>Break 1: minutes until start (from now)
+  <label>How many minutes until Break 1 should start
     <div class="row">
-      <input id="break1AfterNow" type="number" value="30" class="tiny" />
+      <input id="break1AfterNow" type="number" value="10" class="tiny" />
       <div id="break1StartDisplay" class="readonly inline-note">Break 1 start: —</div>
     </div>
   </label>
@@ -74,14 +77,13 @@
     <input id="midService" type="number" value="25" />
   </label>
 
-  <div class="row">
-    <label class="small">Buffer before mid-service (minutes)
-      <input id="bufferBefore" type="number" value="5" />
-    </label>
-    <label class="small">Buffer after mid-service (minutes)
-      <input id="bufferAfter" type="number" value="5" />
-    </label>
-  </div>
+  <label>Do you want a buffer between the end of Break 1 and the beginning of mid-service (same buffer will apply before Break 2)?
+    <div class="row">
+      <select id="bufferToggle" class="tiny"><option value="yes">Yes</option><option value="no">No</option></select>
+      <input id="bufferMinutes" type="number" value="5" class="tiny" min="0" />
+      <span class="inline-note">Default 5 minutes; if No selected minutes are treated as 0</span>
+    </div>
+  </label>
 
   <label>Landing service start: minutes before touchdown (default 90)
     <input id="landingOffset" type="number" value="90" />
@@ -96,19 +98,59 @@
 
 <script>
 (() => {
-  // Small IATA -> IANA timezone mapping for demo
+  // Expanded built-in IATA -> IANA timezone mapping for common airports
   const IATA_TZ = {
     LAX: 'America/Los_Angeles',
     SFO: 'America/Los_Angeles',
     JFK: 'America/New_York',
+    EWR: 'America/New_York',
+    LGA: 'America/New_York',
     ORD: 'America/Chicago',
+    DFW: 'America/Chicago',
+    MIA: 'America/New_York',
+    BOS: 'America/New_York',
+    DEN: 'America/Denver',
+    LAS: 'America/Los_Angeles',
+    ATL: 'America/New_York',
+    CLT: 'America/New_York',
+    MSP: 'America/Chicago',
+    PHX: 'America/Phoenix',
+    IAD: 'America/New_York',
     LHR: 'Europe/London',
+    LGW: 'Europe/London',
     CDG: 'Europe/Paris',
+    ORY: 'Europe/Paris',
+    AMS: 'Europe/Amsterdam',
     FRA: 'Europe/Berlin',
+    MUC: 'Europe/Berlin',
+    BER: 'Europe/Berlin',
+    BCN: 'Europe/Madrid',
+    MAD: 'Europe/Madrid',
+    IST: 'Europe/Istanbul',
+    ATH: 'Europe/Athens',
+    ZRH: 'Europe/Zurich',
+    VIE: 'Europe/Vienna',
     NRT: 'Asia/Tokyo',
     HND: 'Asia/Tokyo',
+    ICN: 'Asia/Seoul',
+    PVG: 'Asia/Shanghai',
+    PEK: 'Asia/Shanghai',
+    HKG: 'Asia/Hong_Kong',
+    SIN: 'Asia/Singapore',
+    BKK: 'Asia/Bangkok',
+    DEL: 'Asia/Kolkata',
+    DXB: 'Asia/Dubai',
+    DOH: 'Asia/Qatar',
     SYD: 'Australia/Sydney',
-    SIN: 'Asia/Singapore'
+    MEL: 'Australia/Melbourne',
+    AKL: 'Pacific/Auckland',
+    GRU: 'America/Sao_Paulo',
+    EZE: 'America/Argentina/Buenos_Aires',
+    MEX: 'America/Mexico_City',
+    YYZ: 'America/Toronto',
+    YVR: 'America/Vancouver',
+    JNB: 'Africa/Johannesburg',
+    CPT: 'Africa/Johannesburg'
   };
 
   const $ = id => document.getElementById(id);
@@ -128,10 +170,102 @@
   }
   populateTimeSelectors();
 
-  function setDestNowDisplay(tz, msUtc) {
-    if (!tz) { $('destNowDisplay').textContent = 'Destination local time: —'; return; }
+  let currentDestNowMs = null; // authoritative destination "now" (ms UTC) from API or fallback
+  let currentDestTz = null;
+  let airportCsvCache = null; // cache CSV text for IATA->tz lookup
+
+  function setDestNowDisplayFromMs(tz, msUtc, sourceLabel='worldtimeapi') {
+    currentDestNowMs = msUtc;
+    currentDestTz = tz;
     const s = formatInZone(msUtc, tz);
-    $('destNowDisplay').textContent = `Destination local time: ${s}`;
+    $('destNowDisplay').textContent = `Destination local time: ${s} (${tz}) — source: ${sourceLabel}`;
+    setDefaultTouchdownAndBreak(msUtc, tz);
+    updateBreak1StartDisplay();
+  }
+
+  // Fetch world time for timezone
+  async function fetchWorldTimeMs(iana) {
+    const url = `https://worldtimeapi.org/api/timezone/${encodeURIComponent(iana)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`WorldTimeAPI returned ${resp.status}`);
+    const body = await resp.json();
+    if (!body.datetime) throw new Error('No datetime in worldtimeapi response');
+    const dt = new Date(body.datetime);
+    if (isNaN(dt)) throw new Error('Failed to parse worldtimeapi datetime');
+    return dt.getTime();
+  }
+
+  // Try to resolve unknown IATA using a public CSV dataset (datasets/airport-codes)
+  async function resolveIataToTimezone(iata) {
+    // load CSV once
+    if (!airportCsvCache) {
+      const url = 'https://raw.githubusercontent.com/datasets/airport-codes/master/data/airport-codes.csv';
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('Failed to fetch airport codes CSV');
+      airportCsvCache = await resp.text();
+    }
+    const csv = airportCsvCache;
+    // parse minimal: split lines and find row where iata_code matches
+    const lines = csv.split('\n');
+    const headers = lines[0].split(',').map(h => h.replace(/"/g,'').trim());
+    const iataIdx = headers.indexOf('iata_code');
+    const tzIdx = headers.indexOf('timezone');
+    if (iataIdx === -1 || tzIdx === -1) throw new Error('CSV missing expected columns');
+    const needle = iata.toUpperCase();
+    for (let i=1;i<lines.length;i++) {
+      const row = lines[i];
+      if (!row) continue;
+      // naive CSV split — works for this dataset in most rows (no embedded commas in iata/timezone)
+      const cols = row.split(',');
+      const code = (cols[iataIdx] || '').replace(/"/g,'').trim().toUpperCase();
+      const tz = (cols[tzIdx] || '').replace(/"/g,'').trim();
+      if (code === needle && tz) return tz;
+    }
+    return null;
+  }
+
+  function onTimezoneChanged() {
+    const iata = ($('iataInput').value || '').trim().toUpperCase();
+    const tzManual = ($('tzInput').value || '').trim();
+    const builtin = IATA_TZ[iata];
+    const tz = tzManual || builtin || '';
+    if (!tz) {
+      // if user typed a 3-letter code that's not builtin, attempt online resolve
+      if (iata && iata.length === 3) {
+        $('destNowDisplay').textContent = `Looking up timezone for ${iata}...`;
+        resolveIataToTimezone(iata).then(foundTz => {
+          if (foundTz) {
+            $('tzInput').value = foundTz;
+            // now proceed to fetch destination time
+            fetchWorldTimeMs(foundTz).then(ms => setDestNowDisplayFromMs(foundTz, ms, 'worldtimeapi'))
+              .catch(() => {
+                const np = getLocalParts(foundTz, new Date());
+                setDestNowDisplayFromMs(foundTz, localPartsToUtcMs(np), 'Intl-fallback');
+              });
+          } else {
+            $('destNowDisplay').textContent = `Unknown IATA code "${iata}". Enter IANA tz or choose a sample.`;
+            currentDestNowMs = null; currentDestTz = null;
+          }
+        }).catch(() => {
+          $('destNowDisplay').textContent = `Unknown IATA code "${iata}" and lookup failed. Enter IANA tz or choose a sample.`;
+          currentDestNowMs = null; currentDestTz = null;
+        });
+      } else {
+        $('destNowDisplay').textContent = 'Destination local time: —';
+        currentDestNowMs = null; currentDestTz = null;
+      }
+      return;
+    }
+
+    // We have a timezone; fetch authoritative time
+    fetchWorldTimeMs(tz).then(ms => {
+      setDestNowDisplayFromMs(tz, ms, 'worldtimeapi');
+    }).catch(() => {
+      const nowUtc = new Date();
+      const destParts = getLocalParts(tz, nowUtc);
+      const nowDestMs = localPartsToUtcMs(destParts);
+      setDestNowDisplayFromMs(tz, nowDestMs, 'Intl-fallback');
+    });
   }
 
   $('iataSelect').addEventListener('change', (e) => {
@@ -141,24 +275,28 @@
     onTimezoneChanged();
   });
 
-  $('iataInput').addEventListener('change', onTimezoneChanged);
+  // Listen on input for immediacy and on blur for finalization
+  $('iataInput').addEventListener('input', (e) => {
+    const raw = e.target.value || '';
+    const up = raw.toUpperCase().replace(/[^A-Z]/g,'').slice(0,3);
+    e.target.value = up;
+    if (up.length === 3) {
+      if (IATA_TZ[up]) {
+        $('tzInput').value = IATA_TZ[up];
+      }
+      onTimezoneChanged();
+    }
+  });
+
+  $('iataInput').addEventListener('blur', onTimezoneChanged);
   $('tzInput').addEventListener('change', onTimezoneChanged);
 
-  function onTimezoneChanged() {
-    const iata = ($('iataInput').value || '').trim().toUpperCase();
-    const tz = ($('tzInput').value || '').trim() || (IATA_TZ[iata] || '');
-    if (!tz) { setDestNowDisplay(null); return; }
-    const nowUtc = new Date();
-    const destNowParts = getLocalParts(tz, nowUtc);
-    const nowDestMs = localPartsToUtcMs(destNowParts);
-    setDestNowDisplay(tz, nowDestMs);
-
-    // Default touchdown date = date of (destNow + 6h)
+  // Default touchdown date/time based on authoritative dest now
+  function setDefaultTouchdownAndBreak(nowDestMs, tz) {
+    if (!nowDestMs) return;
     const defaultDateMs = nowDestMs + 6 * 3600 * 1000;
-    const defaultDateStr = formatDateInputValue(defaultDateMs, tz);
-    $('tdDate').value = defaultDateStr;
+    $('tdDate').value = formatDateInputValue(defaultDateMs, tz);
 
-    // Default touchdown time selectors = time for (destNow + 4h)
     const defaultTdMs = nowDestMs + 4 * 3600 * 1000;
     const parts = getLocalParts(tz, new Date(defaultTdMs));
     let h = parseInt(parts.hour,10);
@@ -172,17 +310,21 @@
     $('tdMinute').value = String(minutes).padStart(2,'0');
     $('tdAmPm').value = ampm;
 
-    // Update Break1 start display
     updateBreak1StartDisplay();
   }
 
-  // Utility: format msUtc in timezone into YYYY-MM-DD for date input value
+  // Helpers for timezone arithmetic
   function formatDateInputValue(msUtc, tz) {
-    const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
-    return dtf.format(new Date(msUtc)); // en-CA gives YYYY-MM-DD
+    try {
+      const dtf = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+      return dtf.format(new Date(msUtc));
+    } catch (e) {
+      const d = new Date(msUtc);
+      const y = d.getUTCFullYear(), m = String(d.getUTCMonth()+1).padStart(2,'0'), da = String(d.getUTCDate()).padStart(2,'0');
+      return `${y}-${m}-${da}`;
+    }
   }
 
-  // Get parts (year,month,day,hour,minute,second) for a given timezone & date
   function getLocalParts(timeZone, date = new Date()) {
     const dtf = new Intl.DateTimeFormat('en-GB', {
       timeZone,
@@ -203,20 +345,22 @@
     };
   }
 
-  // Given local parts for the time zone, produce the UTC ms timestamp that corresponds to that local wall time
   function localPartsToUtcMs(parts) {
     const s = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`;
     return Date.parse(s);
   }
 
-  // Format a UTC-ms timestamp in the specified timezone as 12-hour AM/PM string
   function formatInZone(msUtc, timeZone) {
-    const dtf = new Intl.DateTimeFormat('en-US', {
-      timeZone,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: 'numeric', minute: '2-digit', hour12: true
-    });
-    return dtf.format(new Date(msUtc));
+    try {
+      const dtf = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: 'numeric', minute: '2-digit', hour12: true
+      });
+      return dtf.format(new Date(msUtc));
+    } catch (e) {
+      return new Date(msUtc).toLocaleString();
+    }
   }
 
   function parse12HourSelectors() {
@@ -228,91 +372,142 @@
     return { hour: h24, minute };
   }
 
-  function show(msg) { $('output').innerHTML = msg; }
+  // Break1 preview
+  $('break1AfterNow').addEventListener('input', updateBreak1StartDisplay);
 
+  function updateBreak1StartDisplay() {
+    const iata = ($('iataInput').value || '').trim().toUpperCase();
+    const tz = ($('tzInput').value || '').trim() || (IATA_TZ[iata] || '');
+    const minutes = parseInt($('break1AfterNow').value || '0',10);
+    if (currentDestNowMs && tz) {
+      const b1StartMs = currentDestNowMs + minutes * 60000;
+      $('break1StartDisplay').textContent = `Break 1 start: ${formatInZone(b1StartMs, tz)} (local)`;
+    } else if (tz) {
+      const destNowParts = getLocalParts(tz, new Date());
+      const nowDestMs = localPartsToUtcMs(destNowParts);
+      const b1StartMs = nowDestMs + minutes * 60000;
+      $('break1StartDisplay').textContent = `Break 1 start: ${formatInZone(b1StartMs, tz)} (local, Intl fallback)`;
+    } else {
+      $('break1StartDisplay').textContent = 'Break 1 start: —';
+    }
+  }
+
+  // Buffer UI
+  $('bufferToggle').addEventListener('change', updateBufferUI);
+  $('bufferMinutes').addEventListener('input', () => {});
+  function updateBufferUI() {
+    const toggle = $('bufferToggle').value;
+    const bm = $('bufferMinutes');
+    if (toggle === 'no') {
+      bm.disabled = true;
+      bm.value = 0;
+    } else {
+      bm.disabled = false;
+      if (!bm.value) bm.value = 5;
+    }
+  }
+  updateBufferUI();
+
+  // Compute handler
+  $('computeBtn').addEventListener('click', run);
   $('exampleBtn').addEventListener('click', () => {
     $('iataSelect').value = 'LAX';
     $('iataInput').value = 'LAX';
     $('tzInput').value = IATA_TZ['LAX'];
     onTimezoneChanged();
-    // set touchdown to 6:00 PM destination-local
     $('tdHour').value = '6';
     $('tdMinute').value = '00';
     $('tdAmPm').value = 'PM';
-    $('break1AfterNow').value = 30;
+    $('break1AfterNow').value = 10;
     $('midService').value = 25;
-    $('bufferBefore').value = 5;
-    $('bufferAfter').value = 5;
+    $('bufferToggle').value = 'yes';
+    $('bufferMinutes').value = 5;
     $('landingOffset').value = 90;
     updateBreak1StartDisplay();
   });
 
-  // Update Break1 start display when break1AfterNow or timezone changes
-  $('break1AfterNow').addEventListener('input', updateBreak1StartDisplay);
-  $('tdHour').addEventListener('change', () => {});
-  $('tdMinute').addEventListener('change', () => {});
-  $('tdAmPm').addEventListener('change', () => {});
-  $('tdDate').addEventListener('change', () => {});
-
-  function updateBreak1StartDisplay() {
+  function onTimezoneChanged() {
+    // wrapper used from several event handlers
+    const tzManual = ($('tzInput').value || '').trim();
     const iata = ($('iataInput').value || '').trim().toUpperCase();
-    const tz = ($('tzInput').value || '').trim() || (IATA_TZ[iata] || '');
-    if (!tz) { $('break1StartDisplay').textContent = 'Break 1 start: —'; return; }
-    const destNowParts = getLocalParts(tz, new Date());
-    const nowDestMs = localPartsToUtcMs(destNowParts);
-    const minutes = parseInt($('break1AfterNow').value || '0',10);
-    const b1StartMs = nowDestMs + minutes * 60000;
-    $('break1StartDisplay').textContent = `Break 1 start: ${formatInZone(b1StartMs, tz)} (local)`;
-  }
+    const builtin = IATA_TZ[iata];
+    const tz = tzManual || builtin || '';
+    if (!tz) {
+      // try resolving if we have a 3-letter IATA
+      if (iata && iata.length === 3) {
+        $('destNowDisplay').textContent = `Looking up timezone for ${iata}...`;
+        resolveIataToTimezone(iata).then(foundTz => {
+          if (foundTz) {
+            $('tzInput').value = foundTz;
+            fetchWorldTimeMs(foundTz).then(ms => setDestNowDisplayFromMs(foundTz, ms, 'worldtimeapi'))
+              .catch(() => {
+                const np = getLocalParts(foundTz, new Date());
+                setDestNowDisplayFromMs(foundTz, localPartsToUtcMs(np), 'Intl-fallback');
+              });
+          } else {
+            $('destNowDisplay').textContent = `Unknown IATA code "${iata}". Enter IANA tz or choose a sample.`;
+            currentDestNowMs = null; currentDestTz = null;
+          }
+        }).catch(() => {
+          $('destNowDisplay').textContent = `Lookup failed for IATA ${iata}. Enter IANA tz or choose a sample.`;
+          currentDestNowMs = null; currentDestTz = null;
+        });
+      } else {
+        $('destNowDisplay').textContent = 'Destination local time: —';
+        currentDestNowMs = null; currentDestTz = null;
+      }
+      return;
+    }
 
-  // Compute handler (core scheduling logic, preserving equal-rest shift behavior)
-  $('computeBtn').addEventListener('click', run);
+    fetchWorldTimeMs(tz).then(ms => setDestNowDisplayFromMs(tz, ms, 'worldtimeapi'))
+      .catch(() => {
+        const nowUtc = new Date();
+        const destParts = getLocalParts(tz, nowUtc);
+        setDestNowDisplayFromMs(tz, localPartsToUtcMs(destParts), 'Intl-fallback');
+      });
+  }
 
   function run() {
     const iata = ($('iataInput').value || '').trim().toUpperCase();
     const tzManual = ($('tzInput').value || '').trim();
-    const tz = tzManual || (IATA_TZ[iata] || '');
-    if (!tz) { show(`<div class="warn">Unknown timezone. Please enter a valid IANA timezone (e.g. America/Los_Angeles) or pick a known IATA code.</div>`); return; }
+    const tz = tzManual || IATA_TZ[iata] || '';
+    if (!tz) { show(`<div class="warn">Unknown timezone. Please enter a valid IANA timezone or pick a sample.</div>`); return; }
 
     const break1AfterNow = parseInt($('break1AfterNow').value || '0', 10);
     const groups = parseInt($('groups').value || '2', 10);
     if (groups !== 2) { show(`<div class="warn">This demo only supports 2 groups. Please set groups=2.</div>`); return; }
     const midService = Math.max(0, parseInt($('midService').value || '25', 10));
-    const bufferBefore = Math.max(0, parseInt($('bufferBefore').value || '0', 10));
-    const bufferAfter = Math.max(0, parseInt($('bufferAfter').value || '0', 10));
-    let landingOffset = Math.max(0, parseInt($('landingOffset').value || '90', 10)); // minutes before touchdown
+    const bufferToggle = $('bufferToggle').value;
+    const bufferMinutesVal = Math.max(0, parseInt($('bufferMinutes').value || '5', 10));
+    const bufferBefore = bufferToggle === 'yes' ? bufferMinutesVal : 0;
+    const bufferAfter = bufferBefore;
+    let landingOffset = Math.max(0, parseInt($('landingOffset').value || '90', 10));
 
-    const nowUtc = new Date();
-    const destNowParts = getLocalParts(tz, nowUtc);
-    const nowDestMs = localPartsToUtcMs(destNowParts);
+    let nowDestMs = currentDestNowMs;
+    if (!nowDestMs) {
+      const destNowParts = getLocalParts(tz, new Date());
+      nowDestMs = localPartsToUtcMs(destNowParts);
+    }
     const nowDestStr = formatInZone(nowDestMs, tz);
 
-    // Break 1 start (destination-local "now" plus break1AfterNow minutes)
     const b1StartMs = nowDestMs + break1AfterNow * 60000;
 
-    // Touchdown from selectors and date
-    const tdDateVal = $('tdDate').value; // YYYY-MM-DD
+    const tdDateVal = $('tdDate').value;
     const sel = parse12HourSelectors();
     if (!tdDateVal) { show(`<div class="warn">Please select a touchdown date.</div>`); return; }
     const m = tdDateVal.match(/^(\d{4})-(\d{2})-(\d{2})$/);
     if (!m) { show(`<div class="warn">Touchdown date invalid.</div>`); return; }
     const parts = { year: m[1], month: m[2], day: m[3], hour: String(sel.hour).padStart(2,'0'), minute: String(sel.minute).padStart(2,'0'), second: '00' };
-    const touchdownMs = localPartsToUtcMs(parts);
+    const touchdownMs = createDateInZoneMs(parts, tz);
 
-    // If touchdown is earlier than nowDest and user selected date equal default, assume next day -- but here we assume user explicitly set date.
-
-    // Landing service desired start (destination-local)
     let landingStartDesiredMs = touchdownMs - landingOffset * 60000;
-
-    // Compute totals (in minutes)
     let T_total_min = Math.round((landingStartDesiredMs - b1StartMs) / 60000);
     const midservice_total = bufferBefore + midService + bufferAfter;
-    let remainder = T_total_min - midservice_total; // minutes available for both rests combined
+    let remainder = T_total_min - midservice_total;
     let adjustments = { initialShift: 0, evenShift: 0 };
 
-    // If not enough time, attempt to shift landing start later by the minimum minutes needed
     if (remainder < 0) {
-      const required = -remainder; // minutes to add to landing start to make remainder zero
+      const required = -remainder;
       let newLandingStartMs = landingStartDesiredMs + required * 60000;
       if (newLandingStartMs > touchdownMs) newLandingStartMs = touchdownMs;
       const newT_total_min = Math.round((newLandingStartMs - b1StartMs) / 60000);
@@ -323,9 +518,8 @@
       remainder = newRemainder;
     }
 
-    // If we have a non-negative remainder but it's odd, shift landing start later by 1 minute (if possible)
     if (remainder >= 0 && remainder % 2 !== 0) {
-      const extraShift = 1; // minute
+      const extraShift = 1;
       let newLandingStartMs = landingStartDesiredMs + extraShift * 60000;
       if (newLandingStartMs <= touchdownMs) {
         landingStartDesiredMs = newLandingStartMs;
@@ -333,31 +527,26 @@
         T_total_min = Math.round((landingStartDesiredMs - b1StartMs) / 60000);
         remainder = T_total_min - midservice_total;
       } else {
-        // cannot shift to make even (would exceed touchdown)
         remainder = -1;
       }
     }
 
-    // Check feasibility
     if (remainder < 0) {
-      let msg = `<div class="warn">Not enough time between Break 1 start and touchdown (even after attempting to shift landing service). Please check inputs: reduce mid-service or buffers, start Break 1 earlier, or accept smaller landing service offset.</div>`;
-      msg += `<div class="note">Summary of key times (destination local):</div>`;
+      let msg = `<div class="warn">Not enough time between Break 1 start and touchdown (even after attempting to shift landing service). Please check inputs.</div>`;
+      msg += `<div class="note">Summary (destination local):</div>`;
       msg += `<table><tr><th>Event</th><th>Time</th></tr>`;
       msg += `<tr><td>Destination local "now"</td><td>${nowDestStr}</td></tr>`;
       msg += `<tr><td>Break 1 start (now + ${break1AfterNow} min)</td><td>${formatInZone(b1StartMs, tz)}</td></tr>`;
       msg += `<tr><td>Touchdown</td><td>${formatInZone(touchdownMs, tz)}</td></tr>`;
-      msg += `<tr><td>Landing service desired start (before adj)</td><td>${formatInZone(touchdownMs - (landingOffset*60000), tz)}</td></tr>`;
       msg += `</table>`;
       show(msg);
       return;
     }
 
-    // Now remainder is non-negative and even. Split exactly.
     const totalRestMinutes = remainder;
     const group1Rest = totalRestMinutes / 2;
     const group2Rest = totalRestMinutes / 2;
 
-    // Build schedule
     const g1StartMs = b1StartMs;
     const g1EndMs = g1StartMs + group1Rest * 60000;
     const bufferBeforeStartMs = g1EndMs;
@@ -368,10 +557,9 @@
     const bufferAfterEndMs = bufferAfterStartMs + bufferAfter * 60000;
     const g2StartMs = bufferAfterEndMs;
     const g2EndMs = g2StartMs + group2Rest * 60000;
-    const landingStartMs = landingStartDesiredMs; // final value after adjustments
+    const landingStartMs = landingStartDesiredMs;
     const touchdownFinalMs = touchdownMs;
 
-    // Render result
     let html = '';
     html += `<div><strong>Destination time zone:</strong> ${tz} (IATA ${iata || 'n/a'})</div>`;
     html += `<div><strong>Now at destination (local):</strong> ${nowDestStr}</div>`;
@@ -391,18 +579,15 @@
     html += `</table>`;
 
     html += `<div class="note">Summary: total window from Break1 start → landing service start = <strong>${T_total_min} min</strong>. Midservice+buffers = <strong>${midservice_total} min</strong>. Total rest minutes available = <strong>${totalRestMinutes} min</strong> split equally into ${group1Rest} and ${group2Rest} minutes.</div>`;
-
     html += `<div class="ok">Schedule computed successfully. Both groups have identical rest durations.</div>`;
 
-    // Provide printable "paper form" layout (simple)
     html += `<h3>Printable form (fill out on paper)</h3>`;
     html += `<pre>DESTINATION: ${iata || '____'}  TZ: ${tz}\nBREAK 1 START: ${formatInZone(g1StartMs, tz)}\nGROUP 1: ${formatInZone(g1StartMs, tz)} → ${formatInZone(g1EndMs, tz)}  (${group1Rest} min)\nBUFFER BEFORE MID: ${bufferBefore} min   MID SERVICE: ${midService} min   BUFFER AFTER MID: ${bufferAfter} min\nGROUP 2: ${formatInZone(g2StartMs, tz)} → ${formatInZone(g2EndMs, tz)}  (${group2Rest} min)\nLANDING SERVICE START: ${formatInZone(landingStartMs, tz)}  TOUCHDOWN: ${formatInZone(touchdownFinalMs, tz)}\n</pre>`;
 
-    // Debug tiny table of intermediate numeric minutes
     html += `<details><summary>Intermediate numbers (debug)</summary>`;
     html += `<table><tr><th>Variable</th><th>Value</th></tr>`;
     html += `<tr><td>Break1 after now (min)</td><td>${break1AfterNow}</td></tr>`;
-    html += `<tr><td>Break1 start (local)</td><td>${formatInZone(b1StartMs, tz)}</td></tr>`;
+    html += `<tr><td>Break1 start (local)</td><td>${formatInZone(g1StartMs, tz)}</td></tr>`;
     html += `<tr><td>Landing start desired (local)</td><td>${formatInZone(touchdownFinalMs - (landingOffset*60000), tz)}</td></tr>`;
     html += `<tr><td>Landing start actual (local)</td><td>${formatInZone(landingStartMs, tz)}</td></tr>`;
     html += `<tr><td>T_total (min)</td><td>${T_total_min}</td></tr>`;
@@ -412,6 +597,25 @@
 
     show(html);
   }
+
+  // Helper: create ms for a local wall time in a tz by searching +/-36h window
+  function createDateInZoneMs(parts, timeZone) {
+    const y = Number(parts.year), mo = Number(parts.month)-1, d = Number(parts.day);
+    const approx = Date.UTC(y, mo, d, Number(parts.hour), Number(parts.minute), Number(parts.second));
+    const window = 36 * 3600 * 1000;
+    const step = 60000;
+    for (let ms = approx - window; ms <= approx + window; ms += step) {
+      const p = getLocalParts(timeZone, new Date(ms));
+      if (p.year === String(parts.year) && p.month === String(parts.month).padStart(2,'0') && p.day === String(parts.day).padStart(2,'0') &&
+          p.hour === String(parts.hour).padStart(2,'0') && p.minute === String(parts.minute).padStart(2,'0')) {
+        return ms;
+      }
+    }
+    return Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`);
+  }
+
+  // initial UI state
+  updateBufferUI();
 
 })();
 </script>
