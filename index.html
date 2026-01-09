@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Crew Rest Calculator — Single File Demo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; margin: 18px; color: #111; }
+    h1 { margin-top: 0; }
+    label { display: block; margin-top: 10px; font-weight: 600; }
+    input, select { padding: 6px 8px; margin-top: 6px; width: 100%; max-width: 360px; box-sizing: border-box; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .small { width:140px; }
+    button { margin-top: 12px; padding: 8px 14px; }
+    .result { margin-top: 18px; padding: 12px; border: 1px solid #ddd; background: #fafafa; max-width: 900px; }
+    .note { color: #555; font-size: 0.95rem; margin-top: 8px; }
+    pre { background:#111;color:#eee;padding:12px; overflow:auto; }
+    table { border-collapse: collapse; margin-top:12px; }
+    td, th { border:1px solid #ddd; padding:8px; text-align:left; }
+    .warn { color: #a33; font-weight:700; }
+    .ok { color: #166; font-weight:700; }
+  </style>
+</head>
+<body>
+  <h1>Crew Rest Calculator — Demo (single file)</h1>
+  <p>Enter inputs, press "Compute schedule". All times displayed in destination local time (12-hour AM/PM). This demo uses a small IATA→IANA mapping; if the airport isn't listed you can enter the IANA timezone manually.</p>
+
+  <label>IATA code (or select) / Time zone
+    <div class="row">
+      <select id="iataSelect" style="width:180px">
+        <option value="">-- pick sample --</option>
+        <option value="LAX">LAX (Los Angeles)</option>
+        <option value="JFK">JFK (New York)</option>
+        <option value="LHR">LHR (London)</option>
+        <option value="CDG">CDG (Paris)</option>
+        <option value="FRA">FRA (Frankfurt)</option>
+        <option value="SFO">SFO (San Francisco)</option>
+        <option value="NRT">NRT (Tokyo Narita)</option>
+        <option value="SYD">SYD (Sydney)</option>
+        <option value="SIN">SIN (Singapore)</option>
+      </select>
+
+      <input id="iataInput" placeholder="IATA code (e.g. LAX) or leave blank" class="small" />
+      <input id="tzInput" placeholder="IANA time zone (optional e.g. America/Los_Angeles)" class="small" />
+    </div>
+  </label>
+
+  <label>Touchdown time (destination local, 12-hour) — leave blank to use default (4 hours from now)
+    <div class="row">
+      <input id="tdTime" placeholder="e.g. 6:00 PM" class="small" />
+      <input id="tdDate" placeholder="Optional date YYYY-MM-DD" class="small" />
+      <label style="margin:0; font-weight:400;">Default touchdown = 4 hours after now (destination local)</label>
+    </div>
+  </label>
+
+  <label>Break 1: minutes after now (start of Break 1)
+    <input id="break1AfterNow" type="number" value="30" /> 
+  </label>
+
+  <label>Number of groups (currently only 2 supported)
+    <input id="groups" type="number" value="2" min="2" />
+  </label>
+
+  <label>Mid-service duration (minutes)
+    <input id="midService" type="number" value="20" />
+  </label>
+
+  <div class="row">
+    <label class="small">Buffer before mid-service (minutes)
+      <input id="bufferBefore" type="number" value="5" />
+    </label>
+    <label class="small">Buffer after mid-service (minutes)
+      <input id="bufferAfter" type="number" value="5" />
+    </label>
+  </div>
+
+  <label>Landing service start: minutes before touchdown (default 90)
+    <input id="landingOffset" type="number" value="90" />
+  </label>
+
+  <label>Rounding: extra minute goes to
+    <select id="extraTo">
+      <option value="group1">Group 1 (default)</option>
+      <option value="group2">Group 2</option>
+    </select>
+  </label>
+
+  <div style="margin-top:12px;">
+    <button id="computeBtn">Compute schedule</button>
+    <button id="exampleBtn">Fill example (LAX, TD 6:00 PM)</button>
+  </div>
+
+  <div id="output" class="result" aria-live="polite"></div>
+
+<script>
+(() => {
+  // Small IATA -> IANA timezone mapping for demo
+  const IATA_TZ = {
+    LAX: 'America/Los_Angeles',
+    SFO: 'America/Los_Angeles',
+    JFK: 'America/New_York',
+    ORD: 'America/Chicago',
+    LHR: 'Europe/London',
+    CDG: 'Europe/Paris',
+    FRA: 'Europe/Berlin',
+    NRT: 'Asia/Tokyo',
+    HND: 'Asia/Tokyo',
+    SYD: 'Australia/Sydney',
+    SIN: 'Asia/Singapore'
+  };
+
+  const $ = id => document.getElementById(id);
+
+  $('iataSelect').addEventListener('change', (e) => {
+    const v = e.target.value;
+    $('iataInput').value = v;
+    if (IATA_TZ[v]) $('tzInput').value = IATA_TZ[v];
+  });
+
+  $('exampleBtn').addEventListener('click', () => {
+    $('iataSelect').value = 'LAX';
+    $('iataInput').value = 'LAX';
+    $('tzInput').value = IATA_TZ['LAX'];
+    $('tdTime').value = '6:00 PM';
+    $('tdDate').value = '';
+    $('break1AfterNow').value = 30;
+    $('midService').value = 20;
+    $('bufferBefore').value = 5;
+    $('bufferAfter').value = 5;
+    $('landingOffset').value = 90;
+  });
+
+  // Get parts (year,month,day,hour,minute,second) for a given timezone & date
+  function getLocalParts(timeZone, date = new Date()) {
+    const dtf = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false
+    });
+    const parts = dtf.formatToParts(date);
+    const map = {};
+    parts.forEach(p => { if (p.type !== 'literal') map[p.type] = p.value; });
+    // map.month is 2-digit
+    return {
+      year: map.year,
+      month: map.month,
+      day: map.day,
+      hour: map.hour,
+      minute: map.minute,
+      second: map.second
+    };
+  }
+
+  // Given local parts for the time zone, produce the UTC ms timestamp that corresponds to that local wall time
+  function localPartsToUtcMs(parts) {
+    // Create string like 'YYYY-MM-DDTHH:MM:SSZ' and parse (interprets as UTC)
+    const s = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`;
+    return Date.parse(s);
+  }
+
+  // Format a UTC-ms timestamp in the specified timezone as 12-hour AM/PM string
+  function formatInZone(msUtc, timeZone) {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: 'numeric', minute: '2-digit', hour12: true
+    });
+    return dtf.format(new Date(msUtc));
+  }
+
+  // Parse a 12-hour time like '6:00 PM' -> {hour24, minute}
+  function parse12HourTime(str) {
+    if (!str || !str.trim()) return null;
+    const m = str.trim().match(/^(\d{1,2}):(\d{2})\s*([AaPp][Mm])$/);
+    if (!m) return null;
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    const ampm = m[3].toUpperCase();
+    if (ampm === 'AM') {
+      if (h === 12) h = 0;
+    } else {
+      if (h !== 12) h += 12;
+    }
+    return { hour: h, minute: min };
+  }
+
+  function show(msg) { $('output').innerHTML = msg; }
+
+  $('computeBtn').addEventListener('click', run);
+
+  function run() {
+    const iata = ($('iataInput').value || '').trim().toUpperCase();
+    const tzManual = ($('tzInput').value || '').trim();
+    const tz = tzManual || (IATA_TZ[iata] || '');
+    if (!tz) { show(`<div class="warn">Unknown timezone. Please enter a valid IANA timezone (e.g. America/Los_Angeles) or pick a known IATA code.</div>`); return; }
+
+    const break1AfterNow = parseInt($('break1AfterNow').value || '0', 10);
+    const groups = parseInt($('groups').value || '2', 10);
+    if (groups !== 2) {
+      show(`<div class="warn">This demo only supports 2 groups. Please set groups=2.</div>`);
+      return;
+    }
+    const midService = Math.max(0, parseInt($('midService').value || '0', 10));
+    const bufferBefore = Math.max(0, parseInt($('bufferBefore').value || '0', 10));
+    const bufferAfter = Math.max(0, parseInt($('bufferAfter').value || '0', 10));
+    let landingOffset = Math.max(0, parseInt($('landingOffset').value || '90', 10)); // minutes before touchdown
+    const roundingExtraTo = $('extraTo').value || 'group1';
+
+    const nowUtc = new Date();
+    const destNowParts = getLocalParts(tz, nowUtc);
+    const nowDestMs = localPartsToUtcMs(destNowParts); // UTC ms representing destination local now
+    // If we want a visible "Now in destination local" string:
+    const nowDestStr = formatInZone(nowDestMs, tz);
+
+    // Break 1 start (destination-local "now" plus break1AfterNow minutes)
+    const b1StartMs = nowDestMs + break1AfterNow * 60000;
+
+    // Touchdown parsing (user may provide time and optional date)
+    const tdTimeStr = $('tdTime').value.trim();
+    const tdDateStr = $('tdDate').value.trim();
+    let touchdownMs;
+    if (!tdTimeStr) {
+      // default touchdown = 4 hours after nowDest
+      touchdownMs = nowDestMs + 4 * 3600 * 1000;
+    } else {
+      const parsed = parse12HourTime(tdTimeStr);
+      if (!parsed) { show(`<div class="warn">Touchdown time not understood. Use format like "6:00 PM".</div>`); return; }
+      // Use provided date or destination's local date from destNowParts
+      let year = destNowParts.year, month = destNowParts.month, day = destNowParts.day;
+      if (tdDateStr) {
+        const m = tdDateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!m) { show(`<div class="warn">Date must be YYYY-MM-DD if provided.</div>`); return; }
+        year = m[1]; month = m[2]; day = m[3];
+      }
+      // Build local parts object (second as '00')
+      const parts = {
+        year: String(year).padStart(4,'0'),
+        month: String(month).padStart(2,'0'),
+        day: String(day).padStart(2,'0'),
+        hour: String(parsed.hour).padStart(2,'0'),
+        minute: String(parsed.minute).padStart(2,'0'),
+        second: '00'
+      };
+      touchdownMs = localPartsToUtcMs(parts);
+
+      // If touchdown in the past relative to destination-now, assume next day (unless user supplied explicit date)
+      if (!tdDateStr && touchdownMs < nowDestMs - 1000) {
+        touchdownMs += 24 * 3600 * 1000;
+      }
+    }
+
+    // Landing service desired start (destination-local)
+    let landingStartDesiredMs = touchdownMs - landingOffset * 60000;
+
+    // Compute totals (in minutes)
+    let T_total_min = Math.round((landingStartDesiredMs - b1StartMs) / 60000);
+    const midservice_total = bufferBefore + midService + bufferAfter;
+    let remainder = T_total_min - midservice_total; // minutes available for both rests combined
+    let adjustments = null;
+    let landingAdjusted = false;
+
+    if (remainder < 0) {
+      // We can attempt to shift landing start closer to touchdown by abs(remainder) minutes
+      const required = -remainder;
+      let newLandingStartMs = landingStartDesiredMs + required * 60000;
+      if (newLandingStartMs > touchdownMs) {
+        // Can't schedule landing start after touchdown. Cap at touchdown and recompute remainder.
+        newLandingStartMs = touchdownMs;
+      }
+      const newT_total_min = Math.round((newLandingStartMs - b1StartMs) / 60000);
+      const newRemainder = newT_total_min - midservice_total;
+      adjustments = {
+        requiredShiftMinutes: Math.round((newLandingStartMs - landingStartDesiredMs)/60000),
+        newLandingStartMs,
+        newT_total_min,
+        newRemainder
+      };
+      landingStartDesiredMs = newLandingStartMs;
+      T_total_min = newT_total_min;
+      remainder = newRemainder;
+      landingAdjusted = adjustments.requiredShiftMinutes !== 0;
+    }
+
+    // Now check if feasible
+    if (remainder < 0) {
+      // impossible to schedule
+      let msg = `<div class="warn">Not enough time between Break 1 start and touchdown (even after attempting to shift landing service). Please check inputs: reduce mid-service or buffers, start Break 1 earlier, or accept smaller landing service offset.</div>`;
+      msg += `<div class="note">Summary of key times (destination local):</div>`;
+      msg += `<table><tr><th>Event</th><th>Time</th></tr>`;
+      msg += `<tr><td>Destination local "now"</td><td>${nowDestStr}</td></tr>`;
+      msg += `<tr><td>Break 1 start (now + ${break1AfterNow} min)</td><td>${formatInZone(b1StartMs, tz)}</td></tr>`;
+      msg += `<tr><td>Touchdown</td><td>${formatInZone(touchdownMs, tz)}</td></tr>`;
+      msg += `<tr><td>Landing service desired start (before adj)</td><td>${formatInZone(touchdownMs - ($('landingOffset').value*60000), tz)}</td></tr>`;
+      msg += `</table>`;
+      show(msg);
+      return;
+    }
+
+    // We now have remainder >= 0
+    // Split equally into two groups, integer minutes. Extra minute assigned per rounding policy.
+    const totalRestMinutes = remainder;
+    const baseEach = Math.floor(totalRestMinutes / 2);
+    let extra = totalRestMinutes % 2;
+    let group1Rest = baseEach;
+    let group2Rest = baseEach;
+    if (extra === 1) {
+      if (roundingExtraTo === 'group1') group1Rest += 1;
+      else group2Rest += 1;
+    }
+
+    // Build schedule
+    const g1StartMs = b1StartMs;
+    const g1EndMs = g1StartMs + group1Rest * 60000;
+    const bufferBeforeStartMs = g1EndMs;
+    const bufferBeforeEndMs = bufferBeforeStartMs + bufferBefore * 60000;
+    const midStartMs = bufferBeforeEndMs;
+    const midEndMs = midStartMs + midService * 60000;
+    const bufferAfterStartMs = midEndMs;
+    const bufferAfterEndMs = bufferAfterStartMs + bufferAfter * 60000;
+    const g2StartMs = bufferAfterEndMs;
+    const g2EndMs = g2StartMs + group2Rest * 60000;
+    const landingStartMs = landingStartDesiredMs; // final value after adjustments
+    const touchdownFinalMs = touchdownMs;
+
+    // Sanity checks
+    const sanity = [];
+    if (g2EndMs > landingStartMs + 5000) {
+      // allow small rounding tolerances (5s)
+      sanity.push('Group 2 end is after landing service start (due to rounding).');
+    }
+
+    // Render result
+    let html = '';
+    html += `<div><strong>Destination time zone:</strong> ${tz} (IATA ${iata || 'n/a'})</div>`;
+    html += `<div><strong>Now at destination (local):</strong> ${nowDestStr}</div>`;
+    if (landingAdjusted) {
+      html += `<div class="note"><strong>Adjustment:</strong> Landing service start was shifted by ${adjustments.requiredShiftMinutes} minute(s) toward touchdown to make rest allocation possible. New landing-service start: ${formatInZone(landingStartMs, tz)}</div>`;
+    }
+    html += `<table><tr><th>Event</th><th>Local time (${tz})</th><th>Duration / notes</th></tr>`;
+    html += `<tr><td>Break 1 start</td><td>${formatInZone(g1StartMs, tz)}</td><td>Start of window</td></tr>`;
+    html += `<tr><td>Group 1 rest</td><td>${formatInZone(g1StartMs, tz)} → ${formatInZone(g1EndMs, tz)}</td><td>${group1Rest} min</td></tr>`;
+    html += `<tr><td>Buffer before mid-service</td><td>${formatInZone(bufferBeforeStartMs, tz)} → ${formatInZone(bufferBeforeEndMs, tz)}</td><td>${bufferBefore} min</td></tr>`;
+    html += `<tr><td>Mid-service</td><td>${formatInZone(midStartMs, tz)} → ${formatInZone(midEndMs, tz)}</td><td>${midService} min</td></tr>`;
+    html += `<tr><td>Buffer after mid-service</td><td>${formatInZone(bufferAfterStartMs, tz)} → ${formatInZone(bufferAfterEndMs, tz)}</td><td>${bufferAfter} min</td></tr>`;
+    html += `<tr><td>Group 2 rest</td><td>${formatInZone(g2StartMs, tz)} → ${formatInZone(g2EndMs, tz)}</td><td>${group2Rest} min</td></tr>`;
+    html += `<tr><td>Landing service start</td><td>${formatInZone(landingStartMs, tz)}</td><td>(requested ${landingOffset} min before touchdown)</td></tr>`;
+    html += `<tr><td>Touchdown</td><td>${formatInZone(touchdownFinalMs, tz)}</td><td>Touchdown</td></tr>`;
+    html += `</table>`;
+
+    html += `<div class="note">Summary: total window from Break1 start → landing service start = <strong>${T_total_min} min</strong>. Midservice+buffers = <strong>${midservice_total} min</strong>. Total rest minutes available = <strong>${totalRestMinutes} min</strong> split into ${group1Rest} and ${group2Rest} minutes.</div>`;
+
+    if (sanity.length) {
+      html += `<div class="warn">Sanity checks: ${sanity.join(' ; ')}</div>`;
+    } else {
+      html += `<div class="ok">Schedule computed successfully. Both groups have equal rest per the rounding policy.</div>`;
+    }
+
+    // Provide printable "paper form" layout (simple)
+    html += `<h3>Printable form (fill out on paper)</h3>`;
+    html += `<pre>DESTINATION: ${iata || '____'}  TZ: ${tz}\nBREAK 1 START: ${formatInZone(g1StartMs, tz)}\nGROUP 1: ${formatInZone(g1StartMs, tz)} → ${formatInZone(g1EndMs, tz)}  (${group1Rest} min)\nBUFFER BEFORE MID: ${bufferBefore} min   MID SERVICE: ${midService} min   BUFFER AFTER MID: ${bufferAfter} min\nGROUP 2: ${formatInZone(g2StartMs, tz)} → ${formatInZone(g2EndMs, tz)}  (${group2Rest} min)\nLANDING SERVICE START: ${formatInZone(landingStartMs, tz)}  TOUCHDOWN: ${formatInZone(touchdownFinalMs, tz)}\n</pre>`;
+
+    // Debug tiny table of intermediate numeric minutes
+    html += `<details><summary>Intermediate numbers (debug)</summary>`;
+    html += `<table><tr><th>Variable</th><th>Value</th></tr>`;
+    html += `<tr><td>Break1 after now (min)</td><td>${break1AfterNow}</td></tr>`;
+    html += `<tr><td>Break1 start (local)</td><td>${formatInZone(b1StartMs, tz)}</td></tr>`;
+    html += `<tr><td>Landing start desired (local)</td><td>${formatInZone(touchdownFinalMs - ($('landingOffset').value*60000), tz)}</td></tr>`;
+    html += `<tr><td>Landing start actual (local)</td><td>${formatInZone(landingStartMs, tz)}</td></tr>`;
+    html += `<tr><td>T_total (min)</td><td>${T_total_min}</td></tr>`;
+    html += `<tr><td>Midservice total (min)</td><td>${midservice_total}</td></tr>`;
+    html += `<tr><td>Total rest minutes available</td><td>${totalRestMinutes}</td></tr>`;
+    html += `</table></details>`;
+
+    show(html);
+  }
+
+})();
+</script>
+</body>
+</html>
